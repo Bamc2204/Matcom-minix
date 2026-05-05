@@ -1,6 +1,4 @@
 /* This file contains the scheduling policy for SCHED
- *
- * The entry points are:
  *   do_noquantum:        Called on behalf of process' that run out of quantum
  *   do_start_scheduling  Request to start scheduling a proc
  *   do_stop_scheduling   Request to stop scheduling a proc
@@ -86,24 +84,23 @@ static void pick_cpu(struct schedproc * proc)
 
 int do_noquantum(message *m_ptr)
 {
-	register struct schedproc *rmp;
-	int rv, proc_nr_n;
+        register struct schedproc *rmp;
+        int rv, proc_nr_n;
 
-	if (sched_isokendpt(m_ptr->m_source, &proc_nr_n) != OK) {
-		printf("SCHED: WARNING: got an invalid endpoint in OOQ msg %u.\n",
-		m_ptr->m_source);
-		return EBADEPT;
-	}
+        if (sched_isokendpt(m_ptr->m_source, &proc_nr_n) != OK) {
+             printf("SCHED: WARNING: got an invalid endpoint in OOQ msg %u.\n",
+             m_ptr->m_source);
+                return EBADEPT;
+        }
 
-	rmp = &schedproc[proc_nr_n];
-	if (rmp->priority < MIN_USER_Q) {
-		rmp->priority += 1; /* lower priority */
-	}
+        rmp = &schedproc[proc_nr_n];
+        /* Increment counter of completed quantums */
+        rmp->cpu_quantums++;
 
-	if ((rv = schedule_process_local(rmp)) != OK) {
-		return rv;
-	}
-	return OK;
+        if ((rv = schedule_process_local(rmp)) != OK) {
+                return rv;
+        }
+        return OK;
 }
 
 /*===========================================================================*
@@ -319,7 +316,7 @@ static int schedule_process(struct schedproc * rmp, unsigned flags)
 	niced = (rmp->max_priority > USER_Q);
 
 	if ((err = sys_schedule(rmp->endpoint, new_prio,
-		new_quantum, new_cpu, niced)) != OK) {
+		new_quantum, new_cpu)) != OK) {
 		printf("PM: An error occurred when trying to schedule %d: %d\n",
 		rmp->endpoint, err);
 	}
@@ -355,14 +352,26 @@ void balance_queues(void)
 	struct schedproc *rmp;
 	int r, proc_nr;
 
-	for (proc_nr=0, rmp=schedproc; proc_nr < NR_PROCS; proc_nr++, rmp++) {
-		if (rmp->flags & IN_USE) {
-			if (rmp->priority > rmp->max_priority) {
-				rmp->priority -= 1; /* increase priority */
-				schedule_process_local(rmp);
-			}
-		}
-	}
+	        for (proc_nr=0, rmp=schedproc; proc_nr < NR_PROCS; 
+proc_nr++, rmp++) {
+                if (rmp->flags & IN_USE) {
+                        /* Penalize CPU-bound processes that used many 
+quantums */
+                        if (rmp->cpu_quantums >= 3 && rmp->priority < 
+MIN_USER_Q) {
+                                rmp->priority += 1;
+                        }
+                        /* Boost processes that used no quantums 
+(interactive) */
+                        else if (rmp->cpu_quantums == 0 && rmp->priority 
+> rmp->max_priority) {
+                                rmp->priority -= 1;
+                        }
+                        /* Reset counter for next balance window */
+                        rmp->cpu_quantums = 0;
+                        schedule_process_local(rmp);
+                }
+        }
 
 	if ((r = sys_setalarm(balance_timeout, 0)) != OK)
 		panic("sys_setalarm failed: %d", r);
